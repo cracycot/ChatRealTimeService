@@ -3,6 +3,9 @@ package org.example.chatrealtimeservice.services;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
 import org.example.chatrealtimeservice.models.ChatMessage;
+import org.example.chatrealtimeservice.models.DeliveryStatus;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
@@ -11,6 +14,7 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class ChatService {
+    private static final Logger logger = LoggerFactory.getLogger(ChatService.class);
     private static final String TOPIC_INCOMING = "messages-incoming";
 
     @Autowired
@@ -25,36 +29,38 @@ public class ChatService {
     /**
      * Обработка нового сообщения (полученного из ChatController).
      */
-    public void handleIncomingGroupMessage(@Valid ChatMessage chatMessage,  SimpMessageHeaderAccessor headerAccessor) {
+    public void handleIncomingGroupMessage(@Valid ChatMessage chatMessage,
+                                           SimpMessageHeaderAccessor headerAccessor) {
         try {
             // TODO: Можно добавить авторизацию (проверить, может ли senderId писать в conversationId)
-
-            // Сериализуем в JSON
-            String payload = objectMapper.writeValueAsString(chatMessage);
-
-            // Отправляем в Kafka-топик "messages-incoming"
-            kafkaTemplate.send(TOPIC_INCOMING, payload);
-
-            // Исключение отправителя из рассылки
-            String senderSessionId = headerAccessor.getSessionId();
             String destination = "/topic/conversation." + chatMessage.getConversationId();
 
-            // Рассылка сообщения всем подписчикам
-            simpMessagingTemplate.convertAndSend(destination, chatMessage, headers -> {
-                if (!senderSessionId.equals(headers.getHeaders().get("simpSessionId"))) {
-                    // Только для других сессий
-                    return headers;
-                }
-                return null; // Игнорируем отправителя
-            });
+            // Сериализация сообщения
+            String payload = objectMapper.writeValueAsString(chatMessage);
+            logger.info("сообщение сериализованно" + payload);
+
+            // Отправляем сообщение в Kafka
+            kafkaTemplate.send(TOPIC_INCOMING, payload);
+            logger.info("сообщение отправлено в топик" + payload);
+
+            // Рассылаем сообщение всем подписчикам
+            simpMessagingTemplate.convertAndSend(destination, chatMessage);
+            logger.info("сообщение разослано по webSocket" + payload);
+
+            // Отправляем уведомление о доставке в Kafka
+            kafkaTemplate.send("messages-delivery", objectMapper.writeValueAsString(
+                    new DeliveryStatus(chatMessage.getMessageId(), chatMessage.getConversationId(), "DELIVERED")
+            ));
 
         } catch (Exception e) {
-            e.printStackTrace();
-            // Можно логировать, отправлять ответ об ошибке и т.д.
+            logger.error(e.getMessage());
+            simpMessagingTemplate.convertAndSendToUser(chatMessage.getSenderId(), "/queue/confirmation",
+                    "ERROR: " + e.getMessage());
         }
     }
 
-    public void handleIncomingPrivateMessage(@Valid ChatMessage chatMessage,  SimpMessageHeaderAccessor headerAccessor) {
+    public void handleIncomingPrivateMessage(@Valid ChatMessage chatMessage,
+                                             SimpMessageHeaderAccessor headerAccessor) {
         try {
             // Получаем ID сессии отправителя
             String senderSessionId = headerAccessor.getSessionId();
@@ -65,39 +71,18 @@ public class ChatService {
             kafkaTemplate.send(TOPIC_INCOMING, payload);
 
             // Рассылаем сообщение всем клиентам
-            simpMessagingTemplate.convertAndSend(destination, chatMessage);
+//            simpMessagingTemplate.convertAndSend(destination, chatMessage);
+//            logger.info("сообщение разослано по webSocket" + payload);
 
-            // (Опционально) дополнительно отправляем сообщение только отправителю с подтверждением
-            simpMessagingTemplate.convertAndSendToUser(senderSessionId, "/queue/confirmation", chatMessage);
+            simpMessagingTemplate.convertAndSendToUser(chatMessage.getSenderId(), "/queue/confirmation",
+                    chatMessage);
+            logger.info("сообщение разослано по webSocket в private режиме" + payload);
 
         } catch (Exception e) {
-            e.printStackTrace();
-            // Логируем ошибку
+            logger.error(e.getMessage());
+            simpMessagingTemplate.convertAndSendToUser(chatMessage.getSenderId(), "/queue/confirmation",
+                    "ERROR: " + e.getMessage());
         }
 
-    }
-
-    /** TODO реализовать consumer для подтверждения доставки
-     * Этот метод вызывается, когда получаем событие "messages-saved" из Kafka (см. KafkaMessageListener).
-     * Здесь мы можем уведомить клиенты, что сообщение успешно сохранено и "доставлено".
-     *
-     */
-    public void handleMessageSaved(SavedMessageEvent savedMessageEvent) {
-        // Пример: отправляем всем подписчикам /topic/conversation.{conversationId}
-        // событие, что сообщение messageId = savedMessageEvent.messageId теперь "официально" в БД.
-
-        String destination = "/topic/conversation." + savedMessageEvent.conversationId;
-        simpMessagingTemplate.convertAndSend(destination, savedMessageEvent);
-
-        // В клиентском коде можно обработать это событие: обновить статус сообщения на "Доставлено".
-    }
-
-    /**
-     * Вспомогательный класс для десериализации события "messages-saved" из Kafka.
-     */
-    public static class SavedMessageEvent {
-        public String messageId;
-        public String conversationId;
-        // Можно добавить timestamp, senderId, любые нужные поля
     }
 }
