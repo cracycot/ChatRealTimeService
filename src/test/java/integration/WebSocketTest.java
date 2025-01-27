@@ -15,6 +15,7 @@ import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.messaging.WebSocketStompClient;
 
 import java.lang.reflect.Type;
+import java.util.ArrayList;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -64,7 +65,8 @@ public class WebSocketTest {
                 "123",
                 "tester",
                 "Hello, WebSocket!",
-                System.currentTimeMillis()
+                System.currentTimeMillis(),
+                new ArrayList<>()
         );
         session.send("/app/chat/group", chatMessage);
 
